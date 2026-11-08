@@ -313,6 +313,9 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "text/html" if raw else "application/json")
         self.send_header("Content-Length", str(len(data)))
+        # ponytail: no keep-alive, so the `reset` fault always hits a fresh connection. On a reused one, some HTTP
+        # clients (Deno's fetch) resend the request at once by themselves, which hides the SDK's backoff.
+        self.send_header("Connection", "close")
         for name, value in (headers or {}).items():
             self.send_header(name, value)
         self.end_headers()
