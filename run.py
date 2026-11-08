@@ -233,6 +233,27 @@ def poison_isolated(run):
            [error["message"] for error in run.errors])
 
 
+@scenario(["M7", "M11"], [
+    capture(0, event="typed", properties={"plain": "text"}, dateTime="2026-11-07T13:00:00.123456+01:00",
+            decimal="0.00000012345678901234567", invalidUnicode=True),
+    {"op": "flush"},
+    {"op": "shutdown"},
+])
+def value_encoding(run):
+    """A date-time, a decimal, and an invalid string are sent in the one form every SDK uses."""
+    expect_requests(run, 1)
+    properties = run.batch(0)[0]["properties"]
+    expect(properties.get("plain") == "text", "properties: %s", properties)
+    expect(properties.get("dateTime") == "2026-11-07T12:00:00.123Z",
+           "a date-time is a UTC string with milliseconds and Z (M11), got %r", properties.get("dateTime"))
+    expect(properties.get("decimal") == "0.00000012345678901234567",
+           "a decimal is a plain decimal string with all its digits (M11), got %r", properties.get("decimal"))
+    # A lone surrogate written as an escape (Node, Python) arrives as itself; anything else as U+FFFD.
+    expect(properties.get("invalidUnicode") in ("ok\ufffd", "ok\ud800"),
+           "an invalid string is sent with U+FFFD (M11), got %r", properties.get("invalidUnicode"))
+    expect_no_errors(run)
+
+
 @scenario(["W5", "C6", "M9"],
           [capture(i, properties={"blob": "x" * 60000}) for i in range(100)]
           + [capture(100, event="too_big", properties={"blob": "x" * (5 * 1024 * 1024)}),

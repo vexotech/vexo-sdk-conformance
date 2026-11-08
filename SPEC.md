@@ -15,7 +15,7 @@ The key words MUST, MUST NOT, SHOULD, and MAY mean what RFC 2119 says. "Report" 
 callback (`onError`, `on_error`, or the language's equivalent) and never throw or raise to the caller. A
 requirement that names a scenario is checked by `run.py`; the others are checked by each SDK's unit tests.
 
-There are 58 requirements: W1-W6, M1-M10, A1-A18, C1-C24.
+There are 59 requirements: W1-W6, M1-M11, A1-A18, C1-C24.
 
 ## Wire format (W)
 
@@ -47,17 +47,33 @@ There are 58 requirements: W1-W6, M1-M10, A1-A18, C1-C24.
 - **M6.** `distinctId` and `event` are sent as strings. A capture without a `distinctId` or an `event`, or an
   identify without a `distinctId`, is reported and not queued.
 - **M7.** A property or trait value that the JSON encoder can't handle but that has a conventional string form
-  is sent as that string: decimals, UUIDs, and dates or date-times. (Node's `JSON.stringify` already turns a
-  `Date` into its ISO string.)
+  is sent as that string: decimals, UUIDs, and dates or date-times, in the forms that M11 sets.
 - **M8.** The SDK serializes each message when it's queued. A message that still can't be serialized (for
   example a circular reference or a `BigInt`) is reported and not queued; no other message is affected. A
-  message with a `NaN` or infinite number anywhere in it is also reported and not queued: the API's parser
-  refuses those tokens and would reject the whole batch with `400` (A5), and sending `null` instead (what
-  `JSON.stringify` does) would change the caller's data silently. Scenario: `poison_isolated`.
+  message with a `NaN` or infinite number anywhere in it, a float or a decimal, is also reported and not queued:
+  the API's parser refuses those tokens and would reject the whole batch with `400` (A5), and sending `null`
+  instead (what `JSON.stringify` does) would change the caller's data silently. Scenario: `poison_isolated`.
 - **M9.** A message whose serialized size plus `{"batch":[]}` is over 5,242,880 bytes is reported and not
   queued. Scenario: `split_5mb`.
 - **M10.** The SDK MAY check the API's per-message rules (A11-A13) when a message is queued and report a message
   that breaks them instead of sending it. If it doesn't, the API's `dropped` result reports it (C15).
+- **M11.** Every SDK encodes these property and trait values the same way, at any depth, so that the same value
+  reads the same in Vexo whichever SDK sent it:
+  1. A date-time is a string in UTC with milliseconds and `Z`, the form of JavaScript's
+     `Date.prototype.toISOString()`: `2026-11-07T12:00:00.123Z`. A date-time with an offset is converted to UTC,
+     and one without a time zone (Python's naive `datetime`, Java's `LocalDateTime`, a .NET `DateTime` of kind
+     `Unspecified`) is read as UTC, as in M5. Digits after the milliseconds are dropped. A date without a time of
+     day (Python's `date`, Java's `LocalDate`, .NET's `DateOnly`, Ruby's `Date`) is `YYYY-MM-DD`.
+  2. An arbitrary-precision decimal (Python's `Decimal`, Java's `BigDecimal`, .NET's `decimal`, Ruby's
+     `BigDecimal`, PHP's `BcMath\Number`) is a string in plain decimal notation with all of its digits, never in
+     scientific notation, so no precision is lost: `Decimal("1.5E-7")` is `"0.00000015"`. Binary floating-point
+     numbers stay JSON numbers.
+  3. A string that isn't valid Unicode is sent, not dropped: each invalid UTF-8 sequence (PHP, Ruby, and Go strings
+     hold bytes) or lone UTF-16 surrogate (Java and .NET) becomes U+FFFD. Node's `JSON.stringify` and Python's
+     `json.dumps` write a lone surrogate as a `\uXXXX` escape instead, which JSON allows.
+  4. A `NaN` or infinite number drops the message (M8).
+
+  Scenario: `value_encoding`.
 
 ## API behavior (A)
 
