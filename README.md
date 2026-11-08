@@ -40,6 +40,7 @@ A full run takes about a minute, mostly in the scenarios that wait out backoff d
 | `basic` | W1, W2, M1-M3, M5, C16 | An identify and four captures go out in one batch with the right fields, integer epoch-ms timestamps (including one from the language's date-time type), unique message IDs, and a caller's own `messageId`. |
 | `batch_size` | C3, C6 | With `flushAt` 3 and no `flush` call, the queue size alone sends the messages, in order, at most 3 per batch. |
 | `batch_interval` | C4 | With `flushIntervalMs` 500 and no `flush` call, the timer sends the queue. |
+| `interval_off` | C4, C22 | With `flushIntervalMs` 0, which turns the timer off, two queued messages aren't sent during 1.5 seconds without a `flush` call. |
 | `retry_same_message_id` | M4, C7 | A batch that gets a `500` is resent with identical messages. |
 | `retry_after` | C9 | A `429` with `Retry-After: 2` is retried after 2 seconds, not after the shorter backoff. |
 | `backoff_5xx` | C7, C8 | A `503`, a dropped connection, and a `502` are retried after 0.5-1 s, 1-2 s, and 2-4 s. |
@@ -88,7 +89,7 @@ units. Leave the others at your SDK's defaults:
 | Option | Unit |
 | --- | --- |
 | `flushAt` | Messages |
-| `flushIntervalMs` | Milliseconds |
+| `flushIntervalMs` | Milliseconds. `0` turns the interval timer off (Go: pass a negative `FlushInterval`). |
 | `maxRetries` | Retries |
 | `maxQueueSize` | Messages |
 | `timeoutMs` | Milliseconds |

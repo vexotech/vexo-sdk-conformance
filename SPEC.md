@@ -122,11 +122,15 @@ The API checks a request in this order and stops at the first failure. `server.p
   raise on bad input: they report it and drop that one message.
 - **C2.** Options, translated to the language's naming conventions, with these defaults: API key (required; the
   constructor MAY throw when it's missing, as the reference SDKs do), `host` (`https://api.vexo.co`), `flushAt`
-  (100, clamped to 1-500), `flushInterval` (10 seconds), `maxRetries` (3), `maxQueueSize` (10,000), `timeout` (10
-  seconds), `shutdownTimeout` (10 seconds), and an error callback (default: log the error).
+  (100, clamped to 1-500), `flushInterval` (10 seconds; 0 turns the timer off, C4), `maxRetries` (3),
+  `maxQueueSize` (10,000), `timeout` (10 seconds), `shutdownTimeout` (10 seconds), and an error callback
+  (default: log the error).
 - **C3.** When the queue reaches `flushAt` messages, the SDK starts sending without waiting for the interval or
   a `flush` call. Scenario: `batch_size`.
-- **C4.** Every `flushInterval`, the SDK sends whatever is queued. Scenario: `batch_interval`.
+- **C4.** Every `flushInterval`, the SDK sends whatever is queued. A `flushInterval` of 0 turns the interval timer
+  off, and never means "send at once" or a busy loop: messages are then sent on `flushAt`, `flush`, and `shutdown`
+  only. In Go, where a zero `Config` field selects its default, a negative `FlushInterval` turns the timer off.
+  Scenarios: `batch_interval`, `interval_off`.
 - **C5.** The queue holds at most `maxQueueSize` messages. When it's full, the new message is reported and
   dropped; queued messages are kept. Scenario: `queue_full`.
 - **C6.** A batch takes messages in queue order: at most `flushAt` of them, and only as many as fit in one body
@@ -168,8 +172,7 @@ The API checks a request in this order and stops at the first failure. `server.p
 - **C21.** Error reports carry the affected messages and, when there is one, the HTTP status (C10, C11) or the
   API's reason per message (C14, C15).
 - **C22.** Where the normal deployment has no long-lived process (PHP requests, serverless functions, edge
-  runtimes), the README shows how to flush per request. An SDK MAY offer a mode without the interval timer
-  (for example `flushInterval: 0`); messages are then sent on `flushAt`, `flush`, and `shutdown` only.
+  runtimes), the README shows how to flush per request. The interval timer can be turned off there (C4).
 - **C23.** The SDK has no runtime dependencies unless the language lacks a standard HTTP client or JSON
   support; it documents any dependency it takes.
 - **C24.** Importing or loading the SDK has no side effects beyond defining it: no timers, threads, or exit

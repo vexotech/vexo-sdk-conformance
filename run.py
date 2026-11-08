@@ -144,6 +144,13 @@ def batch_interval(run):
            "expected both messages sent by the interval, got %s", [message["event"] for message in run.sent()])
 
 
+@scenario(["C4", "C22"], [capture(0), capture(1), {"op": "sleep", "ms": 1500}, {"op": "exit"}],
+          options={"flushAt": 100, "flushIntervalMs": 0})
+def interval_off(run):
+    """With flushIntervalMs 0 (the timer off), nothing goes out without flushAt, flush, or shutdown."""
+    expect_requests(run, 0)
+
+
 @scenario(["M4", "C7"], [capture(0), capture(1), capture(2), {"op": "flush"}, {"op": "shutdown"}],
           faults=[{"status": 500}])
 def retry_same_message_id(run):
