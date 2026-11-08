@@ -15,7 +15,7 @@ Both scripts need only Python 3.8 or later and its standard library.
 ## Run the scenarios
 
 ```bash
-python3 run.py --driver "node /path/to/vexo-node/conformance/driver.js"
+python3 run.py --driver "node /path/to/vexo-node/conformance/driver.mjs"
 python3 run.py --driver "python3 /path/to/vexo-python/conformance/driver.py"
 ```
 
@@ -46,22 +46,25 @@ A full run takes about a minute, mostly in the scenarios that wait out backoff d
 | `no_retry_on_4xx` | C10 | A `400` is reported with its status and isn't retried; the next batch goes out normally. |
 | `bad_api_key` | A1, C10 | An unknown API key gets a `401`, which is reported and not retried. |
 | `failed_resend` | M4, A15, C14 | A message the API lists in `failed` is resent alone with the same message ID. |
-| `poison_isolated` | M8, M10, C15 | A message the JSON encoder rejects and one the API drops are reported; the valid ones are stored and nothing is resent. |
+| `poison_isolated` | M8, M10, C15 | A message the JSON encoder rejects, one with a `NaN` value, and one the API drops are reported; the valid ones are stored and nothing is resent. |
 | `split_5mb` | W5, C6, M9 | 100 messages of 60 KB are split into requests under 5 MB; one message over 5 MB is reported and never sent. |
 | `shutdown_deadline` | C17 | Against a server that answers after 8 seconds, `shutdown` returns at its 1-second deadline and reports what it couldn't send. |
+| `shutdown_inflight` | C17 | The same, but the SDK started the request on its own (`flushAt` 1) before `shutdown`: the deadline aborts that request too. |
+| `shutdown_backoff` | C17 | The SDK is waiting out `Retry-After: 30` when `shutdown` is called: the deadline ends the wait, and no retry starts after it. |
+| `unparseable_2xx` | W6 | A `200` whose body isn't the JSON envelope counts as accepted: no retry, no error. |
 | `circuit_breaker` | C13 | After a batch uses up its retries, the next batch gets one attempt; a success restores the retries. |
 | `queue_full` | C5 | With `maxQueueSize` 2, the third message is reported and dropped. |
 | `exit_hook` | C19 | A program that queues a message and ends without `flush` or `shutdown` still sends it. |
 
 Every scenario also checks each request's path, headers, batch size, message IDs, and timestamp types (W1, W2,
-W4, M1-M3, M5).
+W4, M1-M3, M5). A capture's timestamp must be an integer, or a string when the caller passed one.
 
 ## Write a driver
 
 A driver is a small program in your SDK's language that reads one scenario as JSON on stdin, calls your SDK, and
 prints JSON lines on stdout. Keep it in your SDK's repo, for example at `conformance/driver.go`, and load the SDK
 from the repo's source rather than from a registry. The Node and Python drivers are about 60 lines each:
-`vexo-node/conformance/driver.js` and `vexo-python/conformance/driver.py`.
+`vexo-node/conformance/driver.mjs` and `vexo-python/conformance/driver.py`.
 
 ### Input
 
@@ -99,7 +102,7 @@ Run the steps in order:
 
 | Step | What the driver does |
 | --- | --- |
-| `capture` | Calls `capture` with `distinctId`, `event`, and, when present, `properties`, `timestamp` (an epoch-ms number; pass it as your SDK's numeric timestamp), and `messageId`. Two fields need translating: `at` is an ISO 8601 string that you convert to your language's date-time type (`Date`, `datetime`, `time.Time`, `Instant`, `DateTimeOffset`, `DateTime`) and pass as the timestamp; `poison: true` means add a property named `poison` whose value your JSON encoder rejects (Node: `10n`; Python: a dict that contains itself; Go: a channel or `math.NaN()`; Ruby and .NET: `Float::NAN`/`double.NaN`; PHP: `NAN` or invalid UTF-8; Java: whatever your serializer refuses). |
+| `capture` | Calls `capture` with `distinctId`, `event`, and, when present, `properties`, `timestamp` (an epoch-ms number; pass it as your SDK's numeric timestamp), and `messageId`. Two fields need translating: `at` is an ISO 8601 string that you convert to your language's date-time type (`Date`, `datetime`, `time.Time`, `Instant`, `DateTimeOffset`, `DateTime`) and pass as the timestamp; `poison: true` means add a property named `poison` whose value your JSON encoder rejects (Node: `10n`; Python: a dict that contains itself; Go: a channel or a func; Ruby and PHP: invalid UTF-8 in a string; .NET and Java: whatever your serializer refuses, such as an object that refers to itself); `nan: true` means add a property named `nan` whose value is your language's floating-point NaN. |
 | `identify` | Calls `identify` with `distinctId` and, when present, `traits`. |
 | `flush` | Calls `flush` and waits for it to finish. |
 | `shutdown` | Calls `shutdown` (or `close`) and waits for it to finish. |
@@ -135,10 +138,11 @@ host's address:
 
 ```bash
 python3 run.py --bind 0.0.0.0 --host-url "http://host.docker.internal:{port}" \
-  --driver "docker run --rm -i -v /path/to/vexo-go:/src -w /src golang:1.23 go run ./conformance"
+  --driver "docker run --rm -i --init -v /path/to/vexo-go:/src -w /src golang:1.23 go run ./conformance/driver"
 ```
 
-Keep `-i` so the container gets stdin. Build or download dependencies before the run (for example, in an image
+Keep `-i` so the container gets stdin, and `--init`: without it the driver runs as PID 1, which ignores a signal
+it sends itself, such as the `SIGKILL` that a PHP driver's `exit` step uses. Build or download dependencies before the run (for example, in an image
 you build once), because each scenario starts a new container. A slow start is fine: the timing checks measure
 the time between requests and inside steps, not the driver's startup.
 

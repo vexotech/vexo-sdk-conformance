@@ -92,15 +92,18 @@ class MockApiTest(unittest.TestCase):
                          [{"index": 0, "reason": "event is required"}])
 
     def test_faults_apply_in_order_and_requests_are_recorded(self):
-        self.post("/_control/faults", {"faults": [{"status": 429, "retryAfter": 3}, {}, {"failIndexes": [1]}]})
+        self.post("/_control/faults", {"faults": [{"status": 429, "retryAfter": 3}, {}, {"failIndexes": [1]},
+                                                  {"status": 200, "body": "<html>ok</html>"}]})
         batch = {"batch": [{"distinctId": "u", "event": "a"}, {"distinctId": "u", "event": "b"}]}
         status, headers, body = self.post("/v1/batch", batch)
         self.assertEqual((status, headers["Retry-After"], body["success"]), (429, "3", False))
         self.assertEqual(self.post("/v1/batch", batch)[2]["data"]["accepted"], 2)
         self.assertEqual(self.post("/v1/batch", batch)[2]["data"]["failed"],
                          [{"index": 1, "reason": server.RETRY_REASON}])
+        with urllib.request.urlopen(urllib.request.Request(self.url + "/v1/batch", data=b"{}", method="POST")) as raw:
+            self.assertEqual((raw.status, raw.read()), (200, b"<html>ok</html>"))
         state = self.state()
-        self.assertEqual([r["status"] for r in state["requests"]], [429, 200, 200])
+        self.assertEqual([r["status"] for r in state["requests"]], [429, 200, 200, 200])
         self.assertEqual(state["requests"][0]["headers"]["x-api-key"], KEY)
         self.assertEqual(state["pendingFaults"], 0)
 

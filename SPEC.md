@@ -26,8 +26,9 @@ There are 58 requirements: W1-W6, M1-M10, A1-A18, C1-C24.
 - **W3.** `host` defaults to `https://api.vexo.co`. A trailing `/` on `host` is removed before the path is added.
 - **W4.** A request holds at most 500 messages. Scenario: every scenario.
 - **W5.** A request body is at most 5,242,880 bytes (5 MiB), measured as the bytes sent. Scenario: `split_5mb`.
-- **W6.** The SDK reads the response body only on a `2xx` status, as the envelope in A15. A `2xx` body it can't
-  parse counts as a success with nothing dropped or failed.
+- **W6.** The SDK reads the response body only on a `2xx` status, as the envelope in A15. A `2xx` means the API
+  accepted the batch, so a `2xx` body it can't parse (a proxy's page, say) counts as a success with nothing
+  dropped or failed: no retry and no error. Scenario: `unparseable_2xx`.
 
 ## Messages (M)
 
@@ -41,16 +42,18 @@ There are 58 requirements: W1-W6, M1-M10, A1-A18, C1-C24.
   a `failed` resend (C14). Scenarios: `retry_same_message_id`, `failed_resend`.
 - **M5.** `timestamp` is integer epoch milliseconds when the SDK produces it: the default (the time of the
   `capture` call), a value converted from the language's date-time type, or a number (any fraction is
-  truncated). A date-time without a time zone is read as UTC. A string the caller passes is sent unchanged; the
-  API accepts ISO 8601 with an offset (A12). Scenario: `basic`.
+  truncated). A date-time without a time zone is read as UTC. An SDK MAY also accept a string, which it sends
+  unchanged; the API accepts ISO 8601 with an offset (A12). Scenario: `basic`.
 - **M6.** `distinctId` and `event` are sent as strings. A capture without a `distinctId` or an `event`, or an
   identify without a `distinctId`, is reported and not queued.
 - **M7.** A property or trait value that the JSON encoder can't handle but that has a conventional string form
   is sent as that string: decimals, UUIDs, and dates or date-times. (Node's `JSON.stringify` already turns a
   `Date` into its ISO string.)
 - **M8.** The SDK serializes each message when it's queued. A message that still can't be serialized (for
-  example a circular reference, a `BigInt`, or `NaN` where the encoder refuses it) is reported and not queued;
-  no other message is affected. Scenario: `poison_isolated`.
+  example a circular reference or a `BigInt`) is reported and not queued; no other message is affected. A
+  message with a `NaN` or infinite number anywhere in it is also reported and not queued: the API's parser
+  refuses those tokens and would reject the whole batch with `400` (A5), and sending `null` instead (what
+  `JSON.stringify` does) would change the caller's data silently. Scenario: `poison_isolated`.
 - **M9.** A message whose serialized size plus `{"batch":[]}` is over 5,242,880 bytes is reported and not
   queued. Scenario: `split_5mb`.
 - **M10.** The SDK MAY check the API's per-message rules (A11-A13) when a message is queued and report a message
@@ -151,9 +154,10 @@ The API checks a request in this order and stops at the first failure. `server.p
 - **C16.** `flush` sends everything queued when it's called and returns (or its promise resolves) when that's
   done. Failures are reported, not thrown. Scenario: `basic`.
 - **C17.** `shutdown` (or `close`) stops the interval timer and sends everything queued, giving up at
-  `shutdownTimeout`: it aborts the request in flight and any backoff wait, then reports the messages still
-  queued. It returns within `shutdownTimeout` plus scheduling slack. Calling it again is safe. Scenario:
-  `shutdown_deadline`.
+  `shutdownTimeout`. At the deadline it aborts the request in flight and ends any backoff wait, including a
+  request or wait that the background sender started before `shutdown` was called, starts no new attempt, and
+  reports the messages it didn't send. It returns within `shutdownTimeout` plus scheduling slack. Calling it
+  again is safe. Scenarios: `shutdown_deadline`, `shutdown_inflight`, `shutdown_backoff`.
 - **C18.** After `shutdown`, `capture` and `identify` report the message and drop it.
 - **C19.** The SDK wires `shutdown` to the language's normal exit hook where one exists (`atexit`, Node's
   `beforeExit`, a JVM shutdown hook, `register_shutdown_function`, `IAsyncDisposable`) and never holds the

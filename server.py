@@ -7,8 +7,8 @@ and injects faults on demand:
     python3 server.py --port 8765
 
     POST /_control/faults  {"faults": [{"status": 429, "retryAfter": 2}, {"status": 500, "count": 2},
-                                       {"delayMs": 5000}, {"reset": true}, {"failIndexes": [1]},
-                                       {"dropIndexes": [0]}, {}]}
+                                       {"status": 200, "body": "<html>ok</html>"}, {"delayMs": 5000},
+                                       {"reset": true}, {"failIndexes": [1]}, {"dropIndexes": [0]}, {}]}
     GET  /_control/state   {"requests": [...], "stored": [...], "pendingFaults": N}
     POST /_control/reset   forget requests, stored messages, faults, and the rate-limit window
 """
@@ -151,6 +151,8 @@ class MockApi:
 
     def reset(self):
         with self._lock:
+            # A request still being handled from before the reset (a delayed one, say) must not touch the new state.
+            self._generation = getattr(self, "_generation", 0) + 1
             self.requests = []
             self.stored = []
             self._faults = []
@@ -171,19 +173,22 @@ class MockApi:
         """Answer one capture API request: (status, JSON body, headers), or None to close without a response."""
         with self._lock:
             fault = self._faults.pop(0) if self._faults else {}
+            generation = self._generation
             record = {"time": time.time(), "path": path, "headers": headers, "bytes": len(body),
                       "body": _json_or_none(body), "fault": fault or None,
                       "status": None, "response": None, "respondedAt": None}
             self.requests.append(record)
         if fault.get("delayMs"):
             time.sleep(fault["delayMs"] / 1000)
+        if generation != self._generation:
+            return None
         result = None
         if fault.get("reset"):
             pass
         elif fault.get("status"):
             status = int(fault["status"])
             retry_after = {"Retry-After": str(fault["retryAfter"])} if "retryAfter" in fault else {}
-            result = status, envelope(status=status, message="Injected fault"), retry_after
+            result = status, fault.get("body", envelope(status=status, message="Injected fault")), retry_after
         else:
             try:
                 result = 200, envelope(self._capture(path, headers, body, fault)), {}
@@ -302,9 +307,11 @@ class _Handler(BaseHTTPRequestHandler):
         return self.rfile.read(int(self.headers.get("Content-Length") or 0))
 
     def _send(self, status, payload, headers=None):
-        data = json.dumps(payload).encode("utf-8")
+        # A string is a raw body from a fault (a proxy's HTML page, say); anything else is JSON.
+        raw = isinstance(payload, str)
+        data = payload.encode("utf-8") if raw else json.dumps(payload).encode("utf-8")
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", "text/html" if raw else "application/json")
         self.send_header("Content-Length", str(len(data)))
         for name, value in (headers or {}).items():
             self.send_header(name, value)

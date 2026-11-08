@@ -10,13 +10,15 @@ driver to exit, and checks what the mock recorded. README.md describes the drive
 """
 import argparse
 import json
+import os
 import re
 import shlex
 import subprocess
 import sys
 import time
 
-import server
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # so `python3 -I run.py` finds server.py
+import server  # noqa: E402
 
 UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 USER_AGENT = re.compile(r"vexo-[a-z0-9]+/[0-9A-Za-z.+-]+")
@@ -206,19 +208,21 @@ def failed_resend(run):
 @scenario(["M8", "M10", "C15"], [
     capture(0, event="valid_a"),
     capture(1, event="poison", poison=True),
-    capture(2, event="x" * 256),
-    capture(3, event="valid_b"),
+    capture(2, event="not_a_number", nan=True),
+    capture(3, event="x" * 256),
+    capture(4, event="valid_b"),
     {"op": "flush"},
     {"op": "shutdown"},
 ])
 def poison_isolated(run):
-    """An unserializable message and one the API drops are reported; the valid ones are stored and nothing is resent."""
+    """Unserializable and NaN messages are reported at enqueue, one the API drops is reported, nothing is resent."""
     expect_requests(run, 1)
     events = run.events(0)
     expect("poison" not in events, "the unserializable message was sent: %s", events)
+    expect("not_a_number" not in events, "the NaN message was sent (M8: drop it, never send null or NaN): %s", events)
     expect(events[0] == "valid_a" and events[-1] == "valid_b", "the valid messages weren't sent: %s", events)
     expect(run.stored_events() == ["valid_a", "valid_b"], "stored: %s", run.stored_events())
-    expect(len(run.errors) >= 2, "expected the poison message and the dropped one reported, got %s",
+    expect(len(run.errors) >= 3, "expected the poison, NaN, and dropped messages reported, got %s",
            [error["message"] for error in run.errors])
 
 
@@ -246,6 +250,35 @@ def shutdown_deadline(run):
            run.step_ms("shutdown"))
     expect(run.seconds < 7, "the driver took %.1fs to exit; exit must not wait for the 8 s response", run.seconds)
     expect(len(run.errors) >= 1, "expected the undelivered messages reported")
+
+
+@scenario(["C17"], [capture(0), {"op": "sleep", "ms": 300}, {"op": "shutdown"}],
+          options={"flushAt": 1, "shutdownTimeoutMs": 1000, "timeoutMs": 30000}, faults=[{"delayMs": 8000}])
+def shutdown_inflight(run):
+    """A request the SDK started on its own is still in flight at shutdown: the deadline aborts it and reports it."""
+    expect_requests(run, 1)
+    expect(run.step_ms("shutdown") <= 1000 + SLACK * 1000 * 3, "shutdown took %d ms; the deadline is 1000 ms",
+           run.step_ms("shutdown"))
+    expect(run.seconds < 7, "the driver took %.1fs to exit; exit must not wait for the 8 s response", run.seconds)
+    expect(len(run.errors) >= 1, "expected the aborted batch reported")
+
+
+@scenario(["C17"], [capture(0), {"op": "sleep", "ms": 500}, {"op": "shutdown"}],
+          options={"flushAt": 1, "shutdownTimeoutMs": 1000}, faults=[{"status": 429, "retryAfter": 30}])
+def shutdown_backoff(run):
+    """The SDK is waiting out Retry-After: 30 at shutdown: the deadline ends the wait, and no retry starts after it."""
+    expect_requests(run, 1)
+    expect(run.step_ms("shutdown") <= 1000 + SLACK * 1000 * 3, "shutdown took %d ms; the deadline is 1000 ms",
+           run.step_ms("shutdown"))
+    expect(len(run.errors) >= 1, "expected the unsent batch reported")
+
+
+@scenario(["W6"], [capture(0), {"op": "flush"}, {"op": "shutdown"}],
+          faults=[{"status": 200, "body": "<html>ok</html>"}])
+def unparseable_2xx(run):
+    """A 200 whose body isn't the JSON envelope (a proxy page, say) still means accepted: no retry, no error."""
+    expect_requests(run, 1)
+    expect_no_errors(run)
 
 
 @scenario(["C13"], [capture(0), {"op": "flush"}, capture(1), {"op": "flush"}, capture(2), {"op": "flush"},
@@ -296,7 +329,9 @@ def check_wire(run, api_key):
             expect(message_id == "order-1234-paid" or UUID.fullmatch(str(message_id)), "messageId: %r (M3)", message_id)
             if message["type"] == "capture":
                 expect(isinstance(message.get("properties"), dict), "properties: %r (M1)", message.get("properties"))
-                expect(type(message.get("timestamp")) is int, "timestamp: %r (M5)", message.get("timestamp"))
+                # M5: integer epoch ms, or a string the caller passed (`basic` checks the ones the SDK produces).
+                timestamp = message.get("timestamp")
+                expect(type(timestamp) is int or isinstance(timestamp, str), "timestamp: %r (M5)", timestamp)
             else:
                 expect(isinstance(message.get("traits"), dict), "traits: %r (M2)", message.get("traits"))
 
